@@ -1,0 +1,41 @@
+#!/bin/sh
+set -e
+# Backup live mail system using a LVM snapshot, encrypt the file and store
+# it on a FTP server. Script can be scheduled as /etc/cron.hourly/mailbackup.
+# Thomas Leuxner <tlx@leuxner.net> 16-08-2018
+
+ftp_server='host.example.com'
+ftp_user='user'
+ftp_password='xxxxxxxxxx'
+gpg_key='tlx@leuxner.net'
+
+# Snapshot definitions that will be passed to function create_lvm_snapshot 
+lvm_mail_vol='/dev/vg0/vmail'
+lvm_mail_snap_name='s.vmail'
+lvm_mail_snap_vol="/dev/vg0/$lvm_mail_snap_name"
+lvm_mail_snap_mount='/media/vmail'
+
+filename=vmail-$(date +"%H")
+
+create_lvm_snapshot () {
+	lvcreate -L1G -s -n $2 $1 >/dev/null 2>&1
+	mount $3 $4 -oro
+}
+
+remove_lvm_snapshot () {
+	umount $1
+	yes | lvremove $1 >/dev/null 2>&1
+}
+
+# Create snapshot of mailboxes
+[ -L $lvm_mail_snap_vol ] && { printf "Snapshot exists. Exiting!\n" >&2; exit 1; }
+[ -d $lvm_mail_snap_mount ] || { printf "Creating mountpoint for snapshot.\n" >&2; mkdir -m 500 $lvm_mail_snap_mount; }
+create_lvm_snapshot "$lvm_mail_vol" "$lvm_mail_snap_name" "$lvm_mail_snap_vol" "$lvm_mail_snap_mount"
+
+# Tar everything and encrypt the file
+nice -n 19 tar -cSzf - $lvm_mail_snap_mount 2> /dev/null | \
+	gpg --trust-model always --recipient $gpg_key --encrypt | \
+  	curl -s -u $ftp_user:$ftp_password ftp://$ftp_server/$filename -T - 2>&1
+
+# Remove snapshot of mailboxes
+remove_lvm_snapshot "$lvm_mail_snap_vol"
